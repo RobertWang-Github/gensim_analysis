@@ -1,0 +1,69 @@
+word2vec.py
+part2
+
+class Word2Vec(BaseWordEmbeddingsModel):
+	def __init__(self, sentences=None, corpus_file=None, size=100, alpha=0.025, window=5, min_count=5,
+                 max_vocab_size=None, sample=1e-3, seed=1, workers=3, min_alpha=0.0001,
+                 sg=0, hs=0, negative=5, ns_exponent=0.75, cbow_mean=1, hashfxn=hash, iter=5, null_word=0,
+                 trim_rule=None, sorted_vocab=1, batch_words=MAX_WORDS_IN_BATCH, compute_loss=False, callbacks=(),
+                 max_final_vocab=None):
+	# 暂略
+
+	def _do_train_epoch(self, corpus_file, thread_id, offset, cython_vocab, thread_private_mem, cur_epoch,
+                        total_examples=None, total_words=None, **kwargs):
+
+		work,neu1 = thread_private_mem # ?
+		
+		# train_epoch_sg与train_epoch_cbow在gensim.models.word2vec_corpusfile.pyx中
+		if self.sg:
+			examples,tally,raw_tally = train_epoch_sg(self, corpus_file, offset, cython_vocab, cur_epoch,
+                                                        total_examples, total_words, work, neu1, self.compute_loss)
+		else:
+			examples, tally, raw_tally = train_epoch_cbow(self, corpus_file, offset, cython_vocab, cur_epoch,
+                                                          total_examples, total_words, work, neu1, self.compute_loss)
+		return examples,tally,raw_tally
+	# 暂略
+
+	def _do_train_job(self,sentences,alpha,inits): # 待训练的句子们sentences alpha学习率
+		work,neu1 = inits
+		tally = 0 # 记录训练的中间词的数量
+		if self.sg: # 采用sg
+			tally += train_batch_sg(self, sentences, alpha, work, self.compute_loss) # training 见word2vec.py part1 1、
+		else: # neg
+			tally += train_batch_cbow(self, sentences, alpha, work, neu1, self.compute_loss)
+		return tally, self._raw_word_count(sentences) # 训练的中间词的数量,句子们的所有词的数量   _raw_word_count位于base_any2vec中
+
+	def _clear_post_train(self):
+		# remove all L2-normalized word vectors from the model ? 何时L2-normalized过？
+		self.wv.vectors_norm = None
+
+	def _set_train_params(self,**kwargs):
+		if "compute_loss" in kwargs:
+			self.compute_loss = kwargs["compute_loss"] # 是否计算loss
+		self.running_training_loss = 0 # 初始化为0
+
+
+
+		
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+			
