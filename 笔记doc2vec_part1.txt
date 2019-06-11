@@ -1,0 +1,117 @@
+doc2vec.py
+part1
+
+from gensim.models.word2vec import train_cbow_pair,train_sg_pair,train_batch_sg
+
+1、def train_document_dbow(model, doc_words, doctag_indexes, alpha, work=None,
+                            train_words=False, learn_doctags=True, learn_words=True, learn_hidden=True,
+                            word_vectors=None, word_locks=None, doctag_vectors=None, doctag_locks=None):
+	
+	# doctag_vectors : tag的向量表示(对比于词的向量表示),应该就是doc向量.此处的tag指的是什么？
+	# doc_words: list of str  doc中的所有词(似乎要在词典中查得到才行)
+	
+	if doctag_vectors is None: # 传入的doc向量为None就用syn0
+		doctag_vectors = model.docvecs.doctag_syn0 #
+	if doctag_locks is None:
+		doctag_locks = model.docvecs.doctag_syn0_lockf
+
+	if train_words and learn_words: # 如果训练词 和 学习词??
+		train_batch_sg(model, [doc_words], alpha, work) # 调用的是word2vec中的train_batch_sg
+
+	for doctag_index in doctag_indexes: # 遍历所有doc的索引  doctag_indexes : list of int doctag的索引们
+		for word in doc_words: # 遍历doc中的所有词(应该不是遍历到的doc的所有词,而是所有doc的所有词)
+			train_sg_pair(
+                    		model, word, doctag_index, alpha, learn_vectors=learn_doctags, learn_hidden=learn_hidden,
+                    		context_vectors=doctag_vectors, context_locks=doctag_locks
+                	) # 注意,word是被遍历的词,与被遍历到的doc索引.(word2vec中传入的是词的索引,通过索引可以拿到向量(embedding))
+			  # sg中,通过传入的索引拿到对应的embedding然后作为特征输入到模型中,参数thetas由word决定.目标即能否预测出word的编码或者辨识出正(word)负样本
+			  # 如此一来,不在该doc中的词也会置入word,这似乎使得word在docs内部是对称的,不根据doc而区分
+	return len(doc_words) # 返回doc中所有词的数量
+
+2、def train_document_dm(model, doc_words, doctag_indexes, alpha, work=None, neu1=None,
+                          learn_doctags=True, learn_words=True, learn_hidden=True,
+                          word_vectors=None, word_locks=None, doctag_vectors=None, doctag_locks=None):
+	
+	if word_vectors is None:
+		word_vectors = model.wv.syn0
+	if word_locks is None:
+		word_locks = model.syn0_lockf
+	if doctag_vectors is None:
+		doctag_vectors = model.docvecs.doctag_syn0
+	if doctag_locks is None:
+		doctag_locks = model.docvecs.doctag_syn0_lockf
+
+	word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab
+                       and model.wv.vocab[w].sample_int > model.random.rand() * 2 ** 32]	
+
+	for pos, word in enumerate(word_vocabs):
+		reduced_window = model.random.randint(model.window)  # 随机缩短的窗口
+		start = 通过max(0, pos - model.window + reduced_window)选择起始位置,这样保证起始位置要么在0,要么>0.
+		window_pos = 对窗口内的词进行枚举,并返回生成器
+		word2_indices = 从window_pos中拿到所有除中间词以外的词在词典中对应的索引word.index(丢掉了pos)
+		l1 = np_sum(word_vectors[word2_indexes], axis=0) + np_sum(doctag_vectors[doctag_indexes], axis=0) # 此处和word2vec是不同的
+		l1 = 从model.wv.syn0中拿到word2_indices对应的嵌入向量 1 * vector_size, 对所有的嵌入向量求和 + 从model.docvecs.doctag_syn0中拿到doctag_indexes对应的嵌入向量 1 * vector_size, 对所有的嵌入向量求和 (这说明词嵌入维度和向量嵌入维度是一致的)
+		count = len(word2_indexes) + len(doctag_indexes) # 除中心词外的词的数目 + 所有doc的数目
+		if model.cbow_mean and count > 1: # 如果l1(input vector)求mean
+			l1 /= count
+		neu1e = train_cbow_pair(model, word, word2_indexes, l1, alpha,learn_vectors=False, learn_hidden=learn_hidden)
+		# 传入的l1(包含两个信息,词的和doc的),该函数只训练word的embedding(但是传入的learn_vectors=False,所以这步不会对word embedding作更新,但是默认的learn_hidden还是true,所以thetas),所以后面还要有doc的embedding训练.
+		if not model.cbow_mean and count > 1: # 如果传入的neu1e是
+			neu1e /= count # 均值修正
+		if learn_doctags: # 此处更新doc向量
+			for i in doctag_indexes:
+				doctag_vectors[i] += neu1e * doctag_locks[i] # 修正后的neu1e
+		if learn_words:
+			for i in word2_indexes:
+				word_vectors[i] += neu1e * word_locks[i]
+	return len(word_vocabs) # 返回中间词数量
+
+3、def train_document_dm_concat(model, doc_words, doctag_indexes, alpha, work=None, neu1=None, learn_doctags=True,
+                                 learn_words=True, learn_hidden=True, word_vectors=None, word_locks=None,
+                                 doctag_vectors=None, doctag_locks=None):
+	
+	if word_vectors is None:
+		word_vectors = model.wv.syn0
+	if word_locks is None:
+		word_locks = model.syn0_lockf
+	if doctag_vectors is None:
+		doctag_vectors = model.docvecs.doctag_syn0
+	if doctag_locks is None:
+		doctag_locks = model.docvecs.doctag_syn0_lockf
+
+	word_vocabs = [model.wv.vocab[w] for w in doc_words if w in model.wv.vocab and model.wv.vocab[w].sample_int > model.random.rand() * 2 ** 32] # 拿到所有中心词
+	doctag_len = len(doctag_indexes) # 所有doc的数目
+	if doctag_len != model.dm_tag_count:
+		return 0 # skip doc without expected number of doctag(s) (TODO: warn/pad?) doc的数目和模型中统计的doc数目不一致时直接return
+
+	null_word = model.wv.vocab['\0'] # 字典里的\0即为null_word
+	pre_pad_count = model.window # 模型的window指的是滑动窗口的半边长
+	post_pad_count = model.window # 
+	padded_document_indexes = ( # 是一个list
+		(pre_pad_count * [null_word.index])  # pre-padding
+                + [word.index for word in word_vocabs if word is not None]  # elide out-of-Vocabulary words
+                + (post_pad_count * [null_word.index])  # post-padding
+        ) # '\0' * model.window(用null_word做padding) + doc_words(在词典里的) + '\0' * model.window(用null_word做padding)
+
+	for pos in range(pre_pad_count, len(padded_document_indexes) - post_pad_count): # 遍历范围去掉头部和尾部的padding,对象为中心词
+		word_context_indexes = ( # 一个list
+                    padded_document_indexes[(pos - pre_pad_count): pos]  # preceding words
+                    + padded_document_indexes[(pos + 1):(pos + 1 + post_pad_count)]  # following words
+            ) # 滑动窗口 pre_pad_count<--pos-->post_pad_count
+		predict_word = model.wv.vocab[model.wv.index2word[padded_document_indexes[pos]]] # 拿到待预测词(即位于窗口中间的pos)
+		l1 = concatenate((doctag_vectors[doctag_indexes], word_vectors[word_context_indexes])).ravel() 
+		# np.concatenate拼接两个数组(axis=None时默认[[A],[B]]与[[C]]拼接成[[A,B,C]]) np.ravel返回flatten的视图(不同于flatten的是视图被修改时,原值也会被修改)结果即[[]]->[]
+		neu1e = train_cbow_pair(model, predict_word, None, l1, alpha,learn_hidden=learn_hidden, learn_vectors=False) # 不同于2、l1是将两个embedding求和,此处是concat
+		
+		e_locks = concatenate((doctag_locks[doctag_indexes], word_locks[word_context_indexes])) # 2、中最后word和doc的embedding也是分开更新的
+		neu1e_r = (neu1e.reshape(-1, model.vector_size) * np_repeat(e_locks, model.vector_size).reshape(-1, model.vector_size)) # concat后的embedding乘以对应的e_locks
+
+		if learn_doctags:
+			# np.ufunc.at(a,indices,b=None) 如果b为scalar,就在a的indices处加上b(for i in indices:a[i]+=b) 如果b为list就for i in range(len(indices)): a[indices[i]] += b[i]
+			np_add.at(doctag_vectors, doctag_indexes, neu1e_r[:doctag_len]) # 在对应位置更新doc的embedding
+		if learn_words:
+			np_add.at(word_vectors, word_context_indexes, neu1e_r[doctag_len:])
+		# 注意,这个padding的作用对滑动窗口起作用,此时words拿embedding时会把'\0'(如果在头部和尾部)也拿进去,这样可以保证concat时words的向量长度始终是一样的.[[doc1],[doc2],...],[['\0'],[word1],...,['\0']] -> [[doc1,doc2,'\0',word1,'\0']] 有词的时候 [[doc1,doc2,word1,word2,word3]] 这样长度就一样了
+		return len(padded_document_indexes) - pre_pad_count - post_pad_count # 返回所有doc在词典里的words数量,padded_document_indexes本身就是加过padding的
+	
+	
