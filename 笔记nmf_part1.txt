@@ -1,0 +1,111 @@
+nmf.py
+part1
+
+W is a word-topic matrix(此处word指的是什么？)
+h is a topic-document matrix
+v is an input corpus batch, word-document matrix
+A, B - matrices that accumulate information from every consecutive chunk. A = h.dot(ht), B = v.dot(ht).
+
+class Nmf(interfaces.TransformationABC, basemodel.BaseTopicModel):
+	def get_topics(self, normalize=None):
+		dense_topics = self._W.T # self._W.T对应topic-word matrix
+		if normalize:
+            		return dense_topics / dense_topics.sum(axis=1).reshape(-1, 1) # 把每个topic(第i个)中的p-word(此时还不是归一概率)相加得到[ti],reshape为[[t1],[t2],[t3]],再每个topic中的p-word对应相除,拿到每个topic下词的归一概率p-word
+		return dense_topic # 返回拿到的topic-word matrix(没经过normalize)
+	# 注意python里面类创建时,self里的参数无论谁(成员函数)去引用比如a = self.attr 都是deepcopy要想修改原值,只能直接修改self.attr.同时,在实例化类对象时,classname(a),此时也是对a进行deepcopy
+
+	def show_topics():
+		# 展示结果的函数
+		if normalize is None:
+            		normalize = self.normalize
+		sparsity = np.zeros(self._W.shape[1]) # 长度和(每个word里的)topic数一致
+		# self._W is a word-topic matrix
+		for row in self._W: # row对应每个word对应的topic.
+			sparsity += (row == 0) # (np.array == 0返回的是一个np.array,每个位置如果==0就为True,否则为False)   执行+=运算时,True为1,False为0.
+		sparsity /= self._W.shape[0] # 除以word的数目,拿到每个topic的平均稀疏度
+		
+		if num_topics < 0 or num_topics >= self.num_topics: # 不合理的num_topics
+			num_topics = self.num_topics # 更新num_topics
+			chosen_topics = range(num_topics) # topic的索引list.就是不排序.
+		else:
+			num_topics = min(num_topics, self.num_topics) # 取小
+			sorted_topics = list(matutils.argsort(sparsity)) # 对(由self._W得到的)稀疏度排序,拿到topic的索引
+			chosen_topics = (
+               			 sorted_topics[: num_topics // 2] + sorted_topics[-num_topics // 2:]  # 取sorted的topic前num_topics的一半和sorted的后num_topics的一半
+            		)
+		shown = []
+
+		topics = self.get_topics(normalize=normalize) # 获取topics 对self._W做了一下转置并返回
+		for i in chosen_topics: # chosen_topics里存的是topic的索引
+			topic = topics[i] # 拿到对应的topic,此时的topic是一个vector=[word1,word2,word3,...]
+			bestn = matutils.argsort(topic, num_words, reverse=True).ravel() # ？取出当前topic中分最大的前num_words的索引
+			topic = [(self.id2word[id], topic[id]) for id in bestn] # 将topic的bestn个转成二元组(word,id)
+			if formatted: # 格式化输出
+				topic = " + ".join(['%.3f*"%s"' % (v, k) for k, v in topic])
+			shown.append((i, topic))
+			if log: # 日志
+				logger.info("topic #%i (%.3f): %s", i, sparsity[i], topic)
+		return shown # 展示结果
+
+	def get_topic_terms(self, topicid, topn=10, normalize=None):
+		topic = self._W[:, topicid] # 取第topicid个topic,即取出第topicid列
+
+		if normalize is None:
+			normalize = self.normalize
+		if normalize:
+			topic /= topic.sum() # 除以对该topic的所有word的和
+
+		bestn = matutils.argsort(topic, topn, reverse=True) # 取出topic中最大的topn个word的索引
+		return [(idx, topic[idx]) for idx in bestn] # 返回二元组(idx,topic[idx])
+
+	def _setup(self, v): # 初始化
+		# v : `csc_matrix` with the shape (n_tokens, chunksize) Batch of bows.
+		# v is an input corpus batch, word-document matrix 
+		# 似乎这里的tokens对应的是words  document对应的是chunksize
+		self.w_std = np.sqrt(v.mean() / (self.num_tokens * self.num_topics)) # ？
+		self._W = np.abs(self.w_std * halfnorm.rvs(size=(self.num_tokens, self.num_topics), random_state=self.random_state))
+		# scipy.stats.halfnorm f(x) = sqrt(2/π)*exp(-x**2/2) for x>=0 即半个正态 size = self.num_tokens * self.num_topics
+
+		self.A = np.zeros((self.num_topics, self.num_topics)) # self.num_topics * self.num_topics 
+		self.B = np.zeros((self.num_tokens, self.num_topics)) # self.num_tokens * self.num_topics
+
+	def l2_norm(self,v): # 传入只有v
+		Wt = self._W.T  # self._W.T对应topic-word matrix
+		l2 = 0
+		for doc, doc_topics in zip(v.T, self._h.T): # v.T:document-word    self._h.T is a document-topic matrix
+			l2 += np.sum(np.square((doc - doc_topics.dot(Wt))))
+			# (每个document对应的word向量 - 每个document对应的topic向量 与 每个topic对应的word向量求内积)**2  拿到l2 loss
+			# 累积所有document的l2 loss
+		return np.sqrt(l2) # 最终结果开根号,这样拿到的还是欧式度量. 这样来看是要把 doc 分解为 doc_topics * Wt
+
+	def update(self, corpus, chunksize=None, passes=None, eval_every=None):
+		if passes is None: # passes是int, full遍历training chunk的次数
+			passes = self.passes
+		if eval_every is None: # eval_every是int.
+			eval_every = self.eval_every
+
+		lencorpus = np.inf
+
+		if isinstance(corpus, scipy.sparse.csc.csc_matrix):
+			lencorpus = corpus.shape[1]
+		else:
+			try:
+				lencorpus = len(corpus)
+			except TypeError:
+				logger.info("input corpus stream has no len()")
+		
+		if chunksize is None:
+			chunksize = min(lencorpus, self.chunksize)
+		
+			
+
+		
+			
+		
+		
+
+
+
+
+
+		
