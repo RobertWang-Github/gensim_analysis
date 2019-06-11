@@ -1,0 +1,240 @@
+word2vec.py------------------------------------------------------------------------------------------------------------------------
+part1.到class Word2Vec(BaseWordEmbeddingsModel)之前
+
+1、def train_batch_sg(model, sentences, alpha, work=None, compute_loss=False): # skip-gram
+	result = 0
+	for sentence in sentences:
+		拿到sentence中的所有词word_vocabs:list
+		for pos,word in enumerate(word_vocabs): #窗口中间的词,可见中间词检索时每次向右移动一个
+			reduced_window = 随机窗口大小 = windowsize - reduced_window(最大值为给定值),此大小为单侧大小,总体长度要*2
+			#遍历窗口中的每一个词,并轮流进行预测
+			start = 通过max(0, pos - model.window + reduced_window)选择起始位置,这样保证起始位置要么在0,要么>0.
+			for pos2, word2 in enumerate(word_vocabs[start:(pos + model.window + 1 - reduced_window)], start): # 给定中间词后,从窗口左端遍历至窗口右端(窗口宽度-随机减小的宽度reduced_window)
+				if pos2!=pos: # 不对自己进行训练
+					调用train_sg_pair(中间词的索引,遍历到的词的索引) # 索引用来提取嵌入向量
+					train_sg_pair(
+                            				model, model.wv.index2word[word.index], word2.index, alpha, compute_loss=compute_loss
+                        				)
+		result += len(word_vocabs) # 中间词累计数
+	return result
+
+2、def train_batch_cbow(model, sentences, alpha, work=None, neu1=None, compute_loss=False): # cbow
+	result = 0
+	for sentence in sentences:
+		拿到sentence中的所有词word_vocabs:list
+		for pos,word in enumerate(word_vocabs): #窗口中间的词,可见中间词检索时每次向右移动一个
+			reduced_window = 随机窗口大小 = windowsize - reduced_window(最大值为给定值),此大小为单侧大小,总体长度要*2
+			start = 通过max(0, pos - model.window + reduced_window)选择起始位置,这样保证起始位置要么在0,要么>0.
+			window_pos = 对窗口内的词进行枚举,并返回生成器
+			word2_indices = 从window_pos中拿到所有除中间词以外的词在词典中对应的索引word.index(丢掉了pos)
+			l1 = 从model.wv.syn0中拿到word2_indices对应的嵌入向量 1 * vector_size, 对所有的嵌入向量求和
+			if word2_indices and model.cbow_mean: # 索引不为None且要求取mean:
+				l1 /= len(word2_indices)
+			调取train_cbow_pair(中间词的索引,遍历到的词的索引) # 索引用来提取嵌入向量
+			train_cbow_pair(model, word, word2_indices, l1, alpha, compute_loss=compute_loss)
+		result += len(word_vocabs) # 中间词累计数
+	return result
+	
+3、def score_sentence_sg(model, sentence, work=None): # 针对每个sentence计算sg分数
+	log_prob_sentence = 0.0
+	if model.negative:
+		raise RuntimeError("scoring is only available for HS=True")
+	拿到sentence中的所有词word_vocabs
+	for pos,word in enumerate(word_vocabs):
+		if word is None: # 该词不在词表中
+			continue
+		#遍历窗口中的每一个词,并轮流进行预测
+		start = 通过max(0, pos - model.window) 选择起始位置,这样保证起始位置要么在0,要么>0.
+		for pos2, word2 in enumerate(word_vocabs[start: pos + model.window + 1], start):
+			if word2 is not None and pos2 != pos: # 待预测的词不能为窗口中间词
+				log_prob_sentence += score_sg_pair(model, word, word2) # 把所有预测的对数概率累计求和
+	return log_prob_sentence
+#注意sg都是遍历两次,一次中心词,一次遍历窗口内的词,训练时用了随机缩短的窗口(cbow也是)，而计算score时没用到。
+
+4、def score_sentence_cbow(model, sentence, work=None, neu1=None):
+	其他部分和score_sentence_sg几乎一致,只有预测环节将滑动遍历窗口中的每个词改成将所有词(除中间词外)求和=l1,如果传入model.cbow_mean=True,就求均值.
+	之后调用log_prob_sentence += score_cbow_pair(model, word, l1)
+	return log_prob_sentence
+
+5、train_sg_pair(model, word, context_index, alpha, learn_vectors=True, learn_hidden=True,
+                  context_vectors=None, context_locks=None, compute_loss=False, is_ft=False):
+	# model待训练的模型类
+	# word:str 待预测的词	context_index:list[int] 词在词典中的索引(但是sg每次只传入一个词(索引),这不是有矛盾？)
+	if context_vectors is None: # [[vector1],[vector2],...]文本中的词的向量表示
+		if is_ft: # If True, weights will be computed using `model.wv.syn0_vocab` and `model.wv.syn0_ngrams` instead of `model.wv.syn0`.
+			context_vectors_vocab = model.wv.syn0_vocab # 
+			context_vectors_ngrams = model.wv.syn0_ngrams # 
+		else:
+			context_vectors = model.wv.syn0 # 所有的context_vectors的词向量表示就一个来源,if is_ft就是两个
+	if context_locks is None: # 文本中的词的lock factors,lock factors是什么??
+		if is_ft:
+			context_locks_vocab = model.syn0_vocab_lockf
+			context_locks_ngrams = model.syn0_ngrams_lockf
+		else:
+			context_locks = model.syn0_lockf
+	if word not in model.wv.vocab: # 如果词典中没有这个待预测的词,直接返回
+		return
+	predict_word = model.wv.vocab[word] #在词典中拿到待预测次的索引
+
+	if is_ft: # 如果context_vectors不为None怎么办?
+		l1_vocab = context_vectors_vocab[context_index[0]] # sg只传入一个词context_index怎么会有多个元素？
+		l1_ngrams = np_sum(context_vectors_ngrams[context_index[1:]], axis=0) # 对[1:]后面的元素对应的vector求和
+		if context_index:
+			l1 = np_sum([l1_vocab, l1_ngrams], axis=0) / len(context_index) # 从不同的vectors字典中拿到的向量 这么做作用何在?
+			# 假如传入的context_index只有一个元素,这里也能兼容,因为[1:]后面就为None
+	else:
+		l1 = context_vectors[context_index] # 拿到context_index(为input_word在字典中的索引)
+		lock_factor = context_locks[context_index] # lock此处是什么含义
+	neu1e = zeros(l1.shape) # 和词向量等长的0向量 经过迭代即为最终的词向量
+	
+	if model.hs: # 采用Hierarchical Softmax(Huffman tree) 隐藏层即为tree的从根节点到叶子节点的高度H那么多的神经元,就对应H次二分类
+		# 1、生成Huffman树后每个word都是树的一个node,向左->0向右->1对应一个logistic二分类(sigmoid函数)
+                     如此每个node(位置可由编码描述,eg:[0,1]即第一次向左第二次向右)和待预测的词都对应一个theta参数(存在model.syn1中),即theta(node_id,predicted_word) 一个有词向量长度的向量,作为logistic里的theta
+		     此时因为每个确定的词编码位置是固定的,所以可以把所有的theta合并成一个矩阵.(theta的个数即为树的深度(layer1_size),因为在每一层面临一次选择),此时l2a = thetas(predicted_word)
+		     假如第一层有2个node(0 and 1),第二层就有4个,但是第二层的theta没有受到第一层的影响,对于node0和node1的theta都是一样的.
+
+		# 2、输入的词向量为l1 = context_vectors[context_index](作为特征输入).如果用dj表示编码1,即向左.p = expit(l1 * l2a.T)**(1-dj) * (1-expit(l1 * l2a.T))**dj *...每一层(由根节点向下)这样乘下去拿到概率
+		     此处thetas变成了一个矩阵,而不是一系列向量,概率P就变成了一个向量,每一个分量对应于每一层二分类的概率prod_term
+
+		# 3、每一层(一个分量)的logistic求导(求导后是分量结果,再合成一个向量),即得thetas更新为outer((1 - predict_word.code - fa) * alpha,l1)   predict_word.code为待预测词的编码eg:0110001
+			同理 neu1e += dot(ga,12a) 注:dot(向量,矩阵),可以看作向量的第i个分量乘以矩阵第i个行向量,再把这些行向量相加.
+
+                # 4、Hierarchical Softmax虽然整体看起来是一个Softmax,但实际上是每一层都是一个logistic,这和一般的Softmax还是有差别的
+
+		l2a = deepcopy(model.syn1[predict_word.point])  # 2d matrix, codelen x layer1_size 通过predict_word.point拿到两个layer之间的变换矩阵 layer1 * 词向量层
+		prod_term = dot(l1,l2a.T) # 词向量层 => layer1(即prod_term)  l1为词向量      l2a.T为 词向量长度 * layer1神经元个数
+		fa = expit(prod_term) # propagate hidden -> output  expit(sigmoid函数) = 1/(1+exp(-x)) = 1/(1+exp(-l1 * l2a.T)) 所以 fa为一个与layer1等长的向量  此处可以看做是softmax
+		ga = (1 - predict_word.code - fa) * alpha # alpha为float学习率 len(ga)=len(layer1)=len(predict_word.code)  predict_word就有两个向量与之对应:词向量和隐藏层output
+		if learn_hidden: # 如果要更新隐藏层
+			model.syn1[predict_word.point] += outer(ga,l1) # 更新隐藏层 ga的每个分量作为系数乘到l1上, outer(ga,l1)返回 len(ga)*len(l1)的矩阵
+		neu1e += dot(ga,l2a) # 更新词向量
+
+		if compute_loss: #如果计算属于hierarchical softmax的损失函数
+			sgn = (-1.0) ** predict_word.code  # 标签转换 0 -> 1, 1 -> -1,待预测词的编码,即为目标(正确的)标签
+			lprob = -log(expit(-sgn * prod_term)) # 此处使用logistic经典的损失函数 针对logistic时,标签为1,-1计算更为方便(因为1/(1+exp(-x))分类面为sign),
+                        # 一般情况就要用交叉熵(计算两个分布的距离),标签为0,1(直接代表概率)，此时(MLE p**label * (1-p)**(1-label))更通用
+			# model.running_training_loss += sum(lprob) 将所有分量求和即得到总的损失函数(即每一层二分类时的损失求和)
+
+	if model.negative: #采用negative sampling负采样方法
+		# 待预测的词word对应label=1,label=0的词(negative)是从不在这个句子中的词随机采样拿到的.
+		word_indices = [predict_word.index] # 置入正样本
+		while len(word_indices) < model.negative + 1: # 采集model.negative个负样本
+			w = model.cum_table.searchsorted(model.random.randint(model.cum_table[-1])) # 
+			if w!= word.index: # 如果抽样拿到的词不是待预测的词.可是要求不是也不能是这个句子中的词吗
+				word_indices.append(w) # 将抽样拿到的词w添加进word_indices
+		l2b = model.syn1neg[word_indices] # 2d matrix,k+1(负样本数+1(只有一个正样本)) * layer1_size(词向量的长度)  syn1neg与syn1区分,前者是负采样的thetas后者是hs的thetas
+ 		# 注:hs是每一层都有一个theta(皆属于待预测词即中间词) 而neg是每个待预测次(包含正负样本)皆有一个theta,在更新词向量时都只更新input词的词向量,但是在更新参数thetas时前者更新中心词的thetas后者更新正负样本的thetas
+		# 这种更新词向量的方式是因为只有input词的词向量作为特征起作用,负样本的词对应的词向量是不参与其中的,只有theta在起作用
+		# sg与cbow在更新词向量时有差别,sg更新input_word(一个),cbow更新所有的input_words(多个),且更新的梯度是相同的量neu1e * (根据i变化的)context_locks[i]
+
+		prod_term = dot(l1,l2b.T) # (1*layer1_size) * (layer1_size*(k+1)) = 1*(k+1)  k+1分类(单层感知器)
+		fb = expit(prod_term) # propagate hidden -> output
+		gb = (model.neg_labels - fb) * alpha # 用以计算softmax梯度  model.neg_labels是[1,0...0] 0的个数是由model.negative确定的
+		if learn_hidden:
+			model.syn1neg[word_indices] += outer(gb, l1) # 梯度法更新thetas
+		neu1e += dot(gb,l2b) # 梯度法更新词向量
+
+	if compute_loss:
+		model.running_training_loss -= sum(log(expit(-1 * prod_term[1:]))) # 计算负样本的loss此时真实标签为-1,预测值为prod_term[1:]
+		model.running_training_loss -= log(expit(prod_term[0])) # 累加上正样本的loss
+		
+	
+	if learn_vectors:
+		if is_ft:
+			model.wv.syn0_vocab[context_index[0]] += neu1e * context_locks_vocab[context_index[0]] # ???
+			for i in context_index[1:]:
+				model.wv.syn0_ngrams[i] += neu1e * context_locks_ngrams[i]
+		else:
+			l1 += neu1e * lock_factor # l1 = context_vectors[context_index] dict(除基本类型以外的其他类型皆如此)传入函数时,不进行copy(除非调用.copy()方法,但是深层dict要调用deepcopy),所以修改l1时就修改了原值
+	return neu1e # 返回计算的词向量
+
+6、train_cbow_pair(model, word, input_word_indices, l1, alpha, learn_vectors=True, learn_hidden=True,
+                    compute_loss=False, context_vectors=None, context_locks=None, is_ft=False):
+	# CBOW algorithm: (context(word),word) -> train vector
+	# 由2、train_batch_cbow可知,input_word_indices为sentence除中间词以外的其他词是个list,而l1为这些词(不包含中间词)的词向量和(或者均值)
+	# 值得注意的是在2、中,l1 = np_sum(model.wv.syn0[word2_indices], axis=0)  # 1 x vector_size 这和5、中l1的来源有差别,5、来源于l1 = context_vectors[context_index] 这似乎使得存在两个词向量表示,但是迭代更新两个都更新吗??
+	# 另外,在训练时,cbow因为一次性输入了context(word)的所有词的和(或均值),所以只迭代一次,而sg每次要输入 word,word2,所以会遍历窗口内的所有词(除去中心词),所以训练次数是有差异的.
+
+	if context_vectors is None:
+		if is_ft:
+			context_vectors_vocab = model.wv.syn0_vocab
+			context_vectors_ngrams = model.wv.syn0_ngrams
+		else:
+			context_vectors = model.wv.syn0 # 此时 context_vectors和model.wv.syn0是同一个(没有copy所以指针指向同一个)
+	if context_locks is None:
+		if is_ft:
+			context_locks_vocab = model.syn0_vocab_lockf
+			context_locks_ngrams = model.syn0_ngrams_lockf
+		else:
+			context_locks = model.syn0_lockf
+
+	neu1e = zeros(l1.shape) # 同5、
+	
+	if model.hs: # 同5、
+		l2a = model.syn1[word.point]
+		prod_term = dot(l1, l2a.T)
+		fa = expit(prod_term)  # propagate hidden -> output # 输出编码预测值
+		ga = (1. - word.code - fa) * alpha
+		if learn_hidden:
+			model.syn1[word.point] += outer(ga, l1)
+		neu1e += dot(ga, l2a)
+		
+		if compute_loss:
+			sgn = (-1.0) ** word.code
+			model.running_training_loss += sum(-log(expit(-sgn * prod_term)))
+	
+	if model.negative: # 同5、
+		word_indices = [word.index]
+		while len(word_indices) < model.negative + 1:
+			w = model.cum_table.searchsorted(model.random.randint(model.cum_table[-1]))
+			if w != word.index:
+				word_indices.append(w)
+		l2b = model.syn1neg[word_indices]
+		prod_term = dot(l1, l2b.T)
+		fb = expit(prod_term)  # propagate hidden -> output
+		gb = (model.neg_labels - fb) * alpha  # vector of error gradients multiplied by the learning rate
+		if learn_hidden:
+			model.syn1neg[word_indices] += outer(gb, l1)
+		neu1e += dot(gb, l2b)
+
+		if compute_loss:
+			model.running_training_loss -= sum(log(expit(-1 * prod_term[1:])))
+			model.running_training_loss -= log(expit(prod_term[0]))
+
+	if learn_vectors: # 此处与5、有差异
+		if is_ft:
+			if not model.cbow_mean and input_word_indices: # 如果不是求mean且context(word)不为None
+				neu1e /= (len(input_word_indices[0]) + len(input_word_indices[1])) # input_word_indices不是个list[int]吗,取len有什么意义??和is_ft有什么关系
+			for i in input_word_indices[0]:
+				context_vectors_vocab[i] += neu1e * context_locks_vocab[i] #?
+			for i in input_word_indices[1]:
+				context_vectors_vocab[i] += neu1e * context_locks_ngrams[i] #?
+		else: # not is_ft
+			if not model.cbow_mean and input_word_indices: # 如果不是求mean且context(word)不为None
+				neu1e /= len(input_word_indices) # 得到的词向量要除以1(正样本数)+负样本数.因为是要用 neu1e * context_locks[i]来更新每个词向量,但是传入的特征l1并没求均值,所以要在结果处求均值.
+			for i in input_word_indices:
+				context_vectors[i] += neu1e * context_locks[i] # 输入的l1是不区分这些词的,所以更新基础neu1e相同也是可以理解的.
+
+	return neu1e
+
+7、def score_sg_pair(model,word,word2):
+	l1 = model.wv.syn0[word2.index] # 拿到word2的词向量
+	l2a = deepcopy(model.syn1[word.point]) # 词向量长度 * layer1_size(树的深度) 注意deepcopy 可以看出应该是hs而不是neg
+	sgn = (-1.0) ** word.code # 0->1,1->-1
+	lprob = -logaddexp(0, -sgn * dot(l1, l2a.T)) # log and exp (list1,list2)  返回一个list[i] = -log(exp(list1[i])+exp(list2[i]))  如果其中一个是scalar 那就是 list[i] = -log(exp(scalar)+exp(list2[i]))
+	# lprob分量是输出第i编码(树第i层的选择)的loss
+	return sum(lprob) # 将所有loss求和
+
+8、def score_cbow_pair(model, word, l1): # cbow. l1是sum(context(word)) or mean(context(word))
+	l2a = model.syn1[word.point]  # 2d matrix, codelen x layer1_size 同7、
+	sgn = (-1.0) ** word.code  # ch function, 0-> 1, 1 -> -1 同7、
+	lprob = -logaddexp(0, -sgn * dot(l1, l2a.T))
+	return sum(lprob)
+
+	
+	
+					
+
+
+	
+	
