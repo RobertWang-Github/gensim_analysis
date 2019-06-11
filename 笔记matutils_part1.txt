@@ -1,0 +1,15 @@
+matutils.py
+part1
+
+def argsort(x,topn=None,reverse=False):
+	x = np.asarray(x) # x: list,tuple -> np.array
+	if topn is None: # 没给出topn就把x的size作为topn
+		topn = x.size
+	if topn <= 0:
+		return [] # topn<=0时返回空值
+	if reverse:
+		x = -x # 取反
+	if topn >= x.size or not hasattr(np, 'argpartition'): # 如果topn>=x.size就直接对x进行排序  如果没有'argpartition'就直接对x排序并取前topn个
+		return np.argsort(x)[:topn]
+	most_extreme = np.argpartition(x,topn)[:topn] # 取前n个  np.argpartition(x,topn) 可以返回x的索引,其中<x中第topn大的在左侧,>x中第topn大的在右侧
+	return most_extreme.take(np.argsort(x.take(most_extreme)))  # x.take即取索引对应的值  对返回的前topn的结果进行排序
